@@ -1,0 +1,1 @@
+in here I would try to let every datagram packet be handled with one thread , and I would send them as objects 
