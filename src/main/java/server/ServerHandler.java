@@ -20,10 +20,9 @@ public class ServerHandler {
     private static final int BUFFER_SIZE = 64_000; // should exceed sender MAX_PACKET_SIZE
     private final DatagramSocket socket;
     private final Path sessionFolder;
-
     // fileId -> assembly state
     private final Map<Long, FileAssembly> assemblies = new ConcurrentHashMap<>();
-
+	private static ExecutorService pool;
 	/*
 	 * CONSTRUCTORS
 	 */
@@ -45,55 +44,48 @@ public class ServerHandler {
 
         while (true) {
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            socket.receive(packet);
+            pool.submit(()->{
+                	try {
+                	socket.receive(packet);
+                	// parse
+                    DataInputStream dis = new DataInputStream(new ByteArrayInputStream(packet.getData(), 0, packet.getLength()));
+                    long fileId = dis.readLong();
+                    int totalChunks = dis.readInt();
+                    int chunkIndex = dis.readInt();
+                    int nameLen = dis.readShort();
+                    byte[] nameBytes = new byte[nameLen];
+                    dis.readFully(nameBytes);
+                    String filename = new String(nameBytes, "UTF-8");
 
-            // parse
-            DataInputStream dis = new DataInputStream(new ByteArrayInputStream(packet.getData(), 0, packet.getLength()));
-            long fileId = dis.readLong();
-            int totalChunks = dis.readInt();
-            int chunkIndex = dis.readInt();
-            int nameLen = dis.readShort();
-            byte[] nameBytes = new byte[nameLen];
-            dis.readFully(nameBytes);
-            String filename = new String(nameBytes, "UTF-8");
+                    byte[] chunkData = dis.readAllBytes();
 
-            byte[] chunkData = dis.readAllBytes();
+                    // sanity checks
+                    if (chunkData.length == 0 && totalChunks > 0) {
+                        System.out.printf("Received empty chunk for file %d chunk %d%n", fileId, chunkIndex);
+                    }
 
-            // sanity checks
-            if (chunkData.length == 0 && totalChunks > 0) {
-                System.out.printf("Received empty chunk for file %d chunk %d%n", fileId, chunkIndex);
-            }
+                    FileAssembly fa = assemblies.computeIfAbsent(fileId, id -> new FileAssembly(fileId, filename, totalChunks));
+                    boolean inserted = fa.insertChunk(chunkIndex, chunkData);
 
-            FileAssembly fa = assemblies.computeIfAbsent(fileId, id -> new FileAssembly(fileId, filename, totalChunks));
-            boolean inserted = fa.insertChunk(chunkIndex, chunkData);
+                    // send ACK if inserted (or even if duplicate)
+                    //sendAck(packet.getAddress(), packet.getPort(), fileId, chunkIndex);
 
-            // send ACK if inserted (or even if duplicate)
-            sendAck(packet.getAddress(), packet.getPort(), fileId, chunkIndex);
+                    if (fa.isComplete()) {
+                        Path outFile = sessionFolder.resolve(fa.filename);
+                        Files.write(outFile, fa.assemble());
+                        assemblies.remove(fileId);
+                        System.out.printf("Completed write: %s (fileId=%d) -> %s%n", fa.filename, fileId, outFile);
+                    }
+                	}catch(Exception e) {
+                		System.out.println("there is an error man");
+                	}
+                
+           }); 
 
-            if (fa.isComplete()) {
-                Path outFile = sessionFolder.resolve(fa.filename);
-                Files.write(outFile, fa.assemble());
-                assemblies.remove(fileId);
-                System.out.printf("Completed write: %s (fileId=%d) -> %s%n", fa.filename, fileId, outFile);
-            }
+            
         }
     }
 
-    private void sendAck(InetAddress addr, int port, long fileId, int chunkIndex) {
-        try {
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            DataOutputStream dos = new DataOutputStream(baos);
-            dos.writeLong(fileId);
-            dos.writeInt(chunkIndex);
-            dos.writeByte(0); // status ok
-            dos.flush();
-            byte[] ack = baos.toByteArray();
-            DatagramPacket ackPacket = new DatagramPacket(ack, ack.length, addr, port);
-            socket.send(ackPacket);
-        } catch (IOException e) {
-            System.err.println("Failed to send ACK: " + e.getMessage());
-        }
-    }
 
     public void close() {
         socket.close();
@@ -161,6 +153,8 @@ public class ServerHandler {
 	 * APP_START 
 	 */
 	public static void main(String[] args) throws Exception  {
+		pool = Executors.newFixedThreadPool(90);
+
 			ServerHandler receiver = new ServerHandler(); 
 		try {
 			System.out.println("started the receiver");
@@ -169,6 +163,10 @@ public class ServerHandler {
 			System.out.println("catch in server handler");
 		} finally {
 			receiver.close();
+			pool.shutdown();  // Mandatory
+            try {
+                pool.awaitTermination(1, TimeUnit.HOURS);
+            } catch (InterruptedException ignored) {};
 		}
 	}
 }

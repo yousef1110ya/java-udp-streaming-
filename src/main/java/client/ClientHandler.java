@@ -29,6 +29,8 @@ public class ClientHandler {
 	private final DatagramSocket socket;
 	private final InetAddress target; 
 	private final int PORT ;
+	private int fileIndex = 0;
+	private static ExecutorService pool;
 	/*
 	 * CONSTRUCTORS 
 	 */
@@ -58,11 +60,20 @@ public class ClientHandler {
                 })
                 .collect(Collectors.toList());
 
-        long fileIdCounter = System.currentTimeMillis(); // simple fileId base
+         long fileIdCounter = System.currentTimeMillis(); // simple fileId base
 
         for (Path img : images) {
-            fileIdCounter++;
-            sendSingleFile(fileIdCounter, img);
+        	fileIdCounter++;
+        	final long finalFileIdCounter = fileIdCounter;
+        	pool.submit(()->{
+			try {
+				sendSingleFile(finalFileIdCounter , img);
+			} catch (Exception e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
+        	});
+        	
         }
     }
 
@@ -94,39 +105,10 @@ public class ClientHandler {
             if (packetBytes.length > MAX_PACKET_SIZE) {
                 throw new IllegalStateException("Constructed packet exceeds MAX_PACKET_SIZE; reduce CHUNK_SIZE");
             }
-
-            boolean acknowledged = false;
-            int attempt = 0;
-            while (!acknowledged && attempt < RETRIES) {
-                attempt++;
-                DatagramPacket packet = new DatagramPacket(packetBytes, packetBytes.length, target, PORT);
-                socket.send(packet);
-
-                try {
-                    // wait for ACK
-                    byte[] ackBuf = new byte[13]; // 8 + 4 + 1
-                    DatagramPacket ackPacket = new DatagramPacket(ackBuf, ackBuf.length);
-                    socket.receive(ackPacket);
-
-                    DataInputStream dis = new DataInputStream(new ByteArrayInputStream(ackPacket.getData(), 0, ackPacket.getLength()));
-                    long ackFileId = dis.readLong();
-                    int ackChunkIdx = dis.readInt();
-                    byte status = dis.readByte();
-
-                    if (ackFileId == fileId && ackChunkIdx == chunkIndex && status == 0) {
-                        acknowledged = true;
-                        //System.out.printf("ACK received for file %d chunk %d%n", fileId, chunkIndex);
-                    } else {
-                        // wrong ack; continue retrying
-                    }
-                } catch (SocketTimeoutException ste) {
-                    System.out.printf("Timeout waiting ACK for file %d chunk %d (attempt %d)%n", fileId, chunkIndex, attempt);
-                }
-            }
-
-            if (!acknowledged) {
-                throw new IOException("Failed to get ACK after retries for file " + fileId + " chunk " + chunkIndex);
-            }
+            // remove the acknoldgment needing .
+            DatagramPacket packet = new DatagramPacket(packetBytes, packetBytes.length, target, PORT);
+            socket.send(packet);
+           
         }
 
         System.out.printf("Completed send for file id=%d name=%s%n", fileId, img.getFileName().toString());
@@ -139,12 +121,19 @@ public class ClientHandler {
 	 * APP_START 
 	 */
 	public static void main(String[] args) throws Exception {
+		pool = Executors.newFixedThreadPool(90);
 
         ClientHandler sender = new ClientHandler();
         try {
             sender.sendImagesInOrder(Path.of("images"));
         } finally {
             sender.close();
+            pool.shutdown();  // Mandatory
+            try {
+                pool.awaitTermination(1, TimeUnit.HOURS);
+            } catch (InterruptedException ignored) {}
+            
+            System.out.println("All tasks finalized.");
         }
     }
 }
