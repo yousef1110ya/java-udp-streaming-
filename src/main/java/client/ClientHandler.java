@@ -186,8 +186,8 @@ public class ClientHandler {
 	 * APP_START 
 	 */
 	public static void main(String[] args) throws Exception {
-		pool = Executors.newFixedThreadPool(5);
-
+		pool = Executors.newFixedThreadPool(8);
+		long startTime = System.currentTimeMillis();
         ClientHandler sender = new ClientHandler();
         try {
             sender.sendImagesInOrder(Path.of("images"));
@@ -199,6 +199,9 @@ public class ClientHandler {
             } catch (InterruptedException ignored) {}
             
             System.out.println("All tasks finalized.");
+            long endTime = System.currentTimeMillis();
+            System.out.println("Program took " +
+                    (endTime - startTime) + " ms") ;
         }
     }
 }

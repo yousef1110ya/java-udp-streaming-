@@ -46,6 +46,12 @@ public class ServerHandler {
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
 
                 	socket.receive(packet);
+                	byte[] dataCopy = Arrays.copyOf(packet.getData(), packet.getLength());
+
+                    pool.submit(() -> 
+                        processPacket(packet.getAddress(), packet.getPort(), dataCopy)
+                    );
+                    /*
                 	// parse
                     DataInputStream dis = new DataInputStream(new ByteArrayInputStream(packet.getData(), 0, packet.getLength()));
                     long fileId = dis.readLong();
@@ -75,9 +81,41 @@ public class ServerHandler {
                         assemblies.remove(fileId);
                         System.out.printf("Completed write: %s (fileId=%d) -> %s%n", fa.filename, fileId, outFile);
                     }
-            
+            */
         }
     }
+	private void processPacket(InetAddress address, int port, byte[] data) {
+	    try {
+	        DataInputStream dis = new DataInputStream(new ByteArrayInputStream(data));
+	        long fileId = dis.readLong();
+	        int totalChunks = dis.readInt();
+	        int chunkIndex = dis.readInt();
+	        int nameLen = dis.readShort();
+
+	        byte[] nameBytes = new byte[nameLen];
+	        dis.readFully(nameBytes);
+	        String filename = new String(nameBytes, "UTF-8");
+
+	        byte[] chunkData = dis.readAllBytes();
+
+	        FileAssembly fa = assemblies.computeIfAbsent(
+	            fileId,
+	            id -> new FileAssembly(fileId, filename, totalChunks)
+	        );
+
+	        fa.insertChunk(chunkIndex, chunkData);
+	        sendAck(address, port, fileId, chunkIndex);
+	        if (fa.isComplete()) {
+	            Path outFile = sessionFolder.resolve(fa.filename);
+	            Files.write(outFile, fa.assemble());
+	            assemblies.remove(fileId);
+	            System.out.printf("Completed write: %s (fileId=%d)%n", fa.filename, fileId);
+	        }
+
+	    } catch (Exception e) {
+	        System.err.println("Packet processing failed: " + e.getMessage());
+	    }
+	}
 	private void sendAck(InetAddress addr, int port, long fileId, int chunkIndex) {
         try {
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
