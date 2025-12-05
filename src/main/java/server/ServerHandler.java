@@ -44,8 +44,7 @@ public class ServerHandler {
 
         while (true) {
             DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
-            pool.submit(()->{
-                	try {
+
                 	socket.receive(packet);
                 	// parse
                     DataInputStream dis = new DataInputStream(new ByteArrayInputStream(packet.getData(), 0, packet.getLength()));
@@ -68,7 +67,7 @@ public class ServerHandler {
                     boolean inserted = fa.insertChunk(chunkIndex, chunkData);
 
                     // send ACK if inserted (or even if duplicate)
-                    //sendAck(packet.getAddress(), packet.getPort(), fileId, chunkIndex);
+                    sendAck(packet.getAddress(), packet.getPort(), fileId, chunkIndex);
 
                     if (fa.isComplete()) {
                         Path outFile = sessionFolder.resolve(fa.filename);
@@ -76,16 +75,24 @@ public class ServerHandler {
                         assemblies.remove(fileId);
                         System.out.printf("Completed write: %s (fileId=%d) -> %s%n", fa.filename, fileId, outFile);
                     }
-                	}catch(Exception e) {
-                		System.out.println("there is an error man");
-                	}
-                
-           }); 
-
             
         }
     }
-
+	private void sendAck(InetAddress addr, int port, long fileId, int chunkIndex) {
+        try {
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            DataOutputStream dos = new DataOutputStream(baos);
+            dos.writeLong(fileId);
+            dos.writeInt(chunkIndex);
+            dos.writeByte(0); // status ok
+            dos.flush();
+            byte[] ack = baos.toByteArray();
+            DatagramPacket ackPacket = new DatagramPacket(ack, ack.length, addr, port);
+            socket.send(ackPacket);
+        } catch (IOException e) {
+            System.err.println("Failed to send ACK: " + e.getMessage());
+        }
+    }
 
     public void close() {
         socket.close();
@@ -153,7 +160,7 @@ public class ServerHandler {
 	 * APP_START 
 	 */
 	public static void main(String[] args) throws Exception  {
-		pool = Executors.newFixedThreadPool(90);
+		pool = Executors.newFixedThreadPool(5);
 
 			ServerHandler receiver = new ServerHandler(); 
 		try {

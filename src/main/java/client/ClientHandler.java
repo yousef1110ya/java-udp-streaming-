@@ -24,8 +24,8 @@ public class ClientHandler {
 	 */
 	private static final int CHUNK_SIZE = 8 * 1024 ; // 8KB 
 	private static final int MAX_PACKET_SIZE = 60000; // less than 60KB
-	private static final int ACK_TIMEOUT_MS = 1000;
-    private static final int RETRIES = 5;
+	private static final int ACK_TIMEOUT_MS = 10000;
+    private static final int RETRIES = 20;
 	private final DatagramSocket socket;
 	private final InetAddress target; 
 	private final int PORT ;
@@ -67,7 +67,8 @@ public class ClientHandler {
         	final long finalFileIdCounter = fileIdCounter;
         	pool.submit(()->{
 			try {
-				sendSingleFile(finalFileIdCounter , img);
+//				sendSingleFile(finalFileIdCounter , img);
+				sendSingleFile_withack(finalFileIdCounter , img);
 			} catch (Exception e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
@@ -76,7 +77,71 @@ public class ClientHandler {
         	
         }
     }
+    private void sendSingleFile_withack(long fileId, Path img) throws Exception {
+        byte[] fileBytes = Files.readAllBytes(img);
+        String filename = img.getFileName().toString();
+        byte[] nameBytes = filename.getBytes("UTF-8");
 
+        int totalChunks = (fileBytes.length + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        System.out.printf("Sending %s (id=%d) size=%d bytes in %d chunks%n", filename, fileId, fileBytes.length, totalChunks);
+
+        for (int chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+            int offset = chunkIndex * CHUNK_SIZE;
+            int len = Math.min(CHUNK_SIZE, fileBytes.length - offset);
+            byte[] chunk = Arrays.copyOfRange(fileBytes, offset, offset + len);
+
+            // build packet
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            DataOutputStream dos = new DataOutputStream(baos);
+            dos.writeLong(fileId);
+            dos.writeInt(totalChunks);
+            dos.writeInt(chunkIndex);
+            dos.writeShort(nameBytes.length);
+            dos.write(nameBytes);
+            dos.write(chunk);
+            dos.flush();
+
+            byte[] packetBytes = baos.toByteArray();
+            if (packetBytes.length > MAX_PACKET_SIZE) {
+                throw new IllegalStateException("Constructed packet exceeds MAX_PACKET_SIZE; reduce CHUNK_SIZE");
+            }
+
+            boolean acknowledged = false;
+            int attempt = 0;
+            while (!acknowledged && attempt < RETRIES) {
+                attempt++;
+                DatagramPacket packet = new DatagramPacket(packetBytes, packetBytes.length, target, PORT);
+                socket.send(packet);
+
+                try {
+                    // wait for ACK
+                    byte[] ackBuf = new byte[13]; // 8 + 4 + 1
+                    DatagramPacket ackPacket = new DatagramPacket(ackBuf, ackBuf.length);
+                    socket.receive(ackPacket);
+
+                    DataInputStream dis = new DataInputStream(new ByteArrayInputStream(ackPacket.getData(), 0, ackPacket.getLength()));
+                    long ackFileId = dis.readLong();
+                    int ackChunkIdx = dis.readInt();
+                    byte status = dis.readByte();
+
+                    if (ackFileId == fileId && ackChunkIdx == chunkIndex && status == 0) {
+                        acknowledged = true;
+                        //System.out.printf("ACK received for file %d chunk %d%n", fileId, chunkIndex);
+                    } else {
+                        // wrong ack; continue retrying
+                    }
+                } catch (SocketTimeoutException ste) {
+                    System.out.printf("Timeout waiting ACK for file %d chunk %d (attempt %d)%n", fileId, chunkIndex, attempt);
+                }
+            }
+
+            if (!acknowledged) {
+                throw new IOException("Failed to get ACK after retries for file " + fileId + " chunk " + chunkIndex);
+            }
+        }
+
+        System.out.printf("Completed send for file id=%d name=%s%n", fileId, img.getFileName().toString());
+    }
     private void sendSingleFile(long fileId, Path img) throws Exception {
         byte[] fileBytes = Files.readAllBytes(img);
         String filename = img.getFileName().toString();
@@ -121,13 +186,13 @@ public class ClientHandler {
 	 * APP_START 
 	 */
 	public static void main(String[] args) throws Exception {
-		pool = Executors.newFixedThreadPool(90);
+		pool = Executors.newFixedThreadPool(5);
 
         ClientHandler sender = new ClientHandler();
         try {
             sender.sendImagesInOrder(Path.of("images"));
         } finally {
-            sender.close();
+            //sender.close();
             pool.shutdown();  // Mandatory
             try {
                 pool.awaitTermination(1, TimeUnit.HOURS);
