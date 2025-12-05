@@ -191,7 +191,7 @@ public class ClientHandler {
         ClientHandler sender = new ClientHandler();
         try {
             sender.sendImagesInOrder(Path.of("images"));
-        } finally {
+        }catch(Exception e) {} finally {
             //sender.close();
             pool.shutdown();  // Mandatory
             try {
@@ -203,5 +203,5 @@ public class ClientHandler {
             System.out.println("Program took " +
                     (endTime - startTime) + " ms") ;
         }
-    }
+	}
 }
